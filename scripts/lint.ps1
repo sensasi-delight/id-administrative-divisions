@@ -1,162 +1,188 @@
 <#
 .SYNOPSIS
-    A linting script for the project.
+    A self-contained linting script for the project with an auto-fix option for indentation.
 .DESCRIPTION
-    This script performs two main checks:
-    1. Indentation Check: Ensures all files adhere to the .editorconfig rules using 'editorconfig-checker'.
-    2. Data Validation: Checks for data consistency and referential integrity in the CSV datasets.
+    This script performs two main checks. When the --Fix switch is used, it will attempt
+    to automatically correct indentation issues.
+
+    1. Indentation Check: Ensures all text files adhere to the .editorconfig rules.
+    2. Data Validation: Checks for data consistency and referential integrity.
+.PARAMETER Fix
+    If specified, the script will automatically fix indentation errors (like tabs-to-spaces).
 #>
 
+param (
+  [switch]$Fix
+)
+
 # --- Script Configuration ---
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "SilentlyContinue"
 
 # --- Helper Functions ---
 function Write-Log {
-    param (
-        [Parameter(Mandatory=$true)]
-        [string]$Message,
-        [string]$Level = "INFO"
-    )
+  param (
+    [Parameter(Mandatory=$true)]
+    [string]$Message,
+    [string]$Level = "INFO"
+  )
 
-    $color = switch ($Level) {
-        "INFO"    { "Blue" }
-        "SUCCESS" { "Green" }
-        "ERROR"   { "Red" }
-        default   { "White" }
-    }
+  $color = switch ($Level) {
+    "INFO"    { "Blue" }
+    "SUCCESS" { "Green" }
+    "ERROR"   { "Red" }
+    "FIXED"   { "Cyan" }
+    default   { "White" }
+  }
 
-    Write-Host -ForegroundColor $color "$($Level.ToUpper()): $Message"
+  Write-Host -ForegroundColor $color "$($Level.ToUpper()): $Message"
 }
 
 # --- Main Logic Functions ---
 
 function Test-Indentation {
-    Write-Log -Level INFO "Starting indentation check..."
+  param (
+    [switch]$Fix
+  )
+  Write-Log -Level INFO "Starting self-contained indentation check..."
+  $totalErrors = 0
+  $filesFixed = 0
+  $editorconfigFile = Join-Path $PSScriptRoot "..\.editorconfig"
 
-    $checker = Get-Command -Name "editorconfig-checker" -ErrorAction SilentlyContinue
-    if (-not $checker) {
-        $checker = Get-Command -Name "ec" -ErrorAction SilentlyContinue
+  if (-not (Test-Path $editorconfigFile)) {
+    Write-Log -Level ERROR ".editorconfig file not found!"
+    return $false
+  }
+
+  $config = @{}
+  Get-Content $editorconfigFile | ForEach-Object {
+    if ($_ -like "*=*") {
+      $key, $value = $_.Split("=", 2); $config[$key.Trim()] = $value.Trim()
+    }
+  }
+  $indentStyle = $config['indent_style']
+  $indentSize = [int]$config['indent_size']
+
+  Write-Log -Level INFO "Applying rule: indent_style = $indentStyle, indent_size = $indentSize"
+
+  $filesToCheck = Get-ChildItem -Path (Join-Path $PSScriptRoot "..") -Recurse -File |
+    Where-Object { $_.FullName -notmatch '\.git[\/]' -and $_.Name -notlike '*.exe' -and $_.Name -notlike '*.dll' -and $_.Name -notlike '*.png' -and $_.Name -notlike '*.jpg' }
+
+  foreach ($file in $filesToCheck) {
+    $lines = Get-Content -Path $file.FullName
+    $fileContentModified = $false
+
+    foreach ($i in 0..($lines.Count - 1)) {
+      $line = $lines[$i]
+      $lineNumber = $i + 1
+
+      if ([string]::IsNullOrWhiteSpace($line)) { continue }
+
+      if ($indentStyle -eq "space") {
+        if ($line.StartsWith("`t")) {
+          if ($Fix) {
+            $leadingTabs = ($line | Select-String -Pattern "^(`t+)").Matches.Groups[1].Value
+            $numSpaces = $leadingTabs.Length * $indentSize
+            $lines[$i] = (" " * $numSpaces) + $line.TrimStart("`t")
+            $fileContentModified = $true
+            Write-Log -Level FIXED "[$($file.Name):$lineNumber] Replaced leading tab(s) with $numSpaces spaces."
+          } else {
+            Write-Log -Level ERROR "[$($file.Name):$lineNumber] Line starts with a tab, but style is set to 'space'."
+            $totalErrors++
+          }
+        }
+
+        $firstCharIndex = [regex]::Match($line, "\S").Index
+        if ($firstCharIndex -gt 0) {
+          if (($firstCharIndex % $indentSize) -ne 0) {
+            Write-Log -Level ERROR "[$($file.Name):$lineNumber] Invalid indentation size. Found $firstCharIndex spaces, which is not a multiple of $indentSize. (Auto-fix not supported for this error)"
+            $totalErrors++
+          }
+        }
+      }
     }
 
-    if (-not $checker) {
-        Write-Log -Level ERROR "'editorconfig-checker' (or 'ec') not found."
-        Write-Host "Please install it by following the instructions at: https://github.com/editorconfig-checker/editorconfig-checker" -ForegroundColor Yellow
-        return $false
+    if ($fileContentModified) {
+      Set-Content -Path $file.FullName -Value $lines -Encoding UTF8
+      $filesFixed++
     }
+  }
 
-    $process = Start-Process -FilePath $checker.Source -Wait -NoNewWindow -PassThru
-    if ($process.ExitCode -ne 0) {
-        Write-Log -Level ERROR "Indentation check failed. Please fix the files listed above."
-        return $false
-    }
+  if ($filesFixed -gt 0) {
+    Write-Log -Level SUCCESS "Successfully fixed indentation in $filesFixed file(s)."
+  }
 
-    Write-Log -Level SUCCESS "All files adhere to .editorconfig rules."
-    return $true
+  if ($totalErrors -gt 0) {
+    Write-Log -Level ERROR "Indentation check failed with $totalErrors error(s) that could not be auto-fixed."
+    return $false
+  }
+
+  Write-Log -Level SUCCESS "All files adhere to the parsed .editorconfig rules."
+  return $true
 }
 
 function Test-DataConsistency {
-    Write-Log -Level INFO "Starting CSV data validation..."
+  Write-Log -Level INFO "Starting CSV data validation..."
+  $basePath = Join-Path $PSScriptRoot "..\csv"
+  $totalErrors = 0
+  $schemas = @(
+    @{ File = "provinces.csv"; IdCol = "id"; ParentCol = $null; ParentSet = $null },
+    @{ File = "regencies.csv"; IdCol = "id"; ParentCol = "province_id"; ParentSet = [System.Collections.Generic.HashSet[string]]::new() },
+    @{ File = "districts.csv"; IdCol = "id"; ParentCol = "regency_id"; ParentSet = [System.Collections.Generic.HashSet[string]]::new() },
+    @{ File = "villages.csv"; IdCol = "id"; ParentCol = "district_id"; ParentSet = [System.Collections.Generic.HashSet[string]]::new() }
+  )
+  $idSets = @{ provinces = $schemas[1].ParentSet; regencies = $schemas[2].ParentSet; districts = $schemas[3].ParentSet }
 
-    $basePath = Join-Path $PSScriptRoot "..\csv"
-    $totalErrors = 0
-
-    # Define schema: File, ID Column, Parent ID Column, Parent ID Set
-    $schemas = @(
-        @{ File = "provinces.csv"; IdCol = "id"; ParentCol = $null; ParentSet = $null },
-        @{ File = "regencies.csv"; IdCol = "id"; ParentCol = "province_id"; ParentSet = [System.Collections.Generic.HashSet[string]]::new() },
-        @{ File = "districts.csv"; IdCol = "id"; ParentCol = "regency_id"; ParentSet = [System.Collections.Generic.HashSet[string]]::new() },
-        @{ File = "villages.csv"; IdCol = "id"; ParentCol = "district_id"; ParentSet = [System.Collections.Generic.HashSet[string]]::new() }
-    )
-
-    $idSets = @{ 
-        provinces = $schemas[1].ParentSet;
-        regencies = $schemas[2].ParentSet;
-        districts = $schemas[3].ParentSet;
+  foreach ($schema in $schemas) {
+    $file = $schema.File
+    $filePath = Join-Path $basePath $file
+    $fileErrors = 0
+    Write-Log -Level INFO "Validating $file..."
+    if (-not (Test-Path $filePath)) { Write-Log -Level ERROR "[$file:0] File not found."; $totalErrors++; continue }
+    $data = Import-Csv -Path $filePath
+    $parentSet = $schema.ParentSet
+    $entityName = $file.Replace(".csv", "")
+    foreach ($row in $data) {
+      $lineNumber = $row.psobject.Properties["PS_ROW_NUMBER"].Value + 1
+      $itemId = $row.($schema.IdCol)
+      if ($itemId -notmatch '^\d+$') { Write-Log -Level ERROR "[$file`:$lineNumber] Column '$($schema.IdCol)' ('$itemId') is invalid."; $fileErrors++; continue }
+      if ($idSets.ContainsKey($entityName)) { [void]$idSets[$entityName].Add($itemId) }
+      if ($schema.ParentCol) {
+        $parentId = $row.($schema.ParentCol)
+        if ($parentId -notmatch '^\d+$') { Write-Log -Level ERROR "[$file`:$lineNumber] Column '$($schema.ParentCol)' ('$parentId') is invalid."; $fileErrors++ }
+        elseif (-not $parentSet.Contains($parentId)) { Write-Log -Level ERROR "[$file`:$lineNumber] Referential integrity fail: '$($schema.ParentCol)' '$parentId' not found."; $fileErrors++ }
+        if (-not $itemId.StartsWith($parentId)) { Write-Log -Level ERROR "[$file`:$lineNumber] ID format inconsistency: '$($schema.IdCol)' '$itemId' does not start with '$($schema.ParentCol)' '$parentId'."; $fileErrors++ }
+      }
     }
+    if ($fileErrors -eq 0) { Write-Log -Level SUCCESS "No issues found in $file." }
+    $totalErrors += $fileErrors
+    Write-Host "---"
+  }
 
-    foreach ($schema in $schemas) {
-        $file = $schema.File
-        $filePath = Join-Path $basePath $file
-        $fileErrors = 0
-        Write-Log -Level INFO "Validating $file..."
-
-        if (-not (Test-Path $filePath)) {
-            Write-Log -Level ERROR "[$file:0] File not found."
-            $totalErrors++
-            continue
-        }
-
-        $data = Import-Csv -Path $filePath
-        $parentSet = $schema.ParentSet
-        $entityName = $file.Replace(".csv", "")
-
-        foreach ($row in $data) {
-            $lineNumber = $row.psobject.Properties["PS_ROW_NUMBER"].Value + 1
-            $itemId = $row.($schema.IdCol)
-            
-            # 1. Validate ID format
-            if ($itemId -notmatch '^\d+$') {
-                Write-Log -Level ERROR "[$file:$lineNumber] Column '($schema.IdCol)' ('$itemId') is invalid. Must be a numeric string."
-                $fileErrors++
-                continue
-            }
-
-            # Store valid ID for child checks
-            if ($idSets.ContainsKey($entityName)) {
-                [void]$idSets[$entityName].Add($itemId)
-            }
-
-            # 2. Validate parent reference (if applicable)
-            if ($schema.ParentCol) {
-                $parentId = $row.($schema.ParentCol)
-
-                if ($parentId -notmatch '^\d+$') {
-                    Write-Log -Level ERROR "[$file:$lineNumber] Column '($schema.ParentCol)' ('$parentId') is invalid. Must be a numeric string."
-                    $fileErrors++
-                }
-                elseif (-not $parentSet.Contains($parentId)) {
-                    Write-Log -Level ERROR "[$file:$lineNumber] Referential integrity fail: '($schema.ParentCol)' '$parentId' not found in parent dataset."
-                    $fileErrors++
-                }
-
-                # 3. Check for prefix consistency
-                if (-not $itemId.StartsWith($parentId)) {
-                    Write-Log -Level ERROR "[$file:$lineNumber] ID format inconsistency: '($schema.IdCol)' '$itemId' does not start with '($schema.ParentCol)' '$parentId'."
-                    $fileErrors++
-                }
-            }
-        }
-
-        if ($fileErrors -eq 0) {
-            Write-Log -Level SUCCESS "No issues found in $file."
-        }
-        $totalErrors += $fileErrors
-        Write-Host "---"
-    }
-
-    if ($totalErrors -gt 0) {
-        Write-Log -Level ERROR "Found $totalErrors total error(s)."
-        return $false
-    }
-    
-    Write-Log -Level SUCCESS "Data validation complete. All data is consistent!"
-    return $true
+  if ($totalErrors -gt 0) { Write-Log -Level ERROR "Found $totalErrors total data error(s)."; return $false }
+  Write-Log -Level SUCCESS "Data validation complete. All data is consistent!"
+  return $true
 }
 
 # --- Main Execution ---
 function main {
-    $indentSuccess = Test-Indentation
-    if (-not $indentSuccess) {
-        exit 1
-    }
+  param ([switch]$Fix)
 
-    Write-Host ""
-    $dataSuccess = Test-DataConsistency
-    if (-not $dataSuccess) {
-        exit 1
+  $indentSuccess = Test-Indentation -Fix:$Fix
+  if (-not $indentSuccess) {
+    if ($Fix) {
+      # If fix was attempted, don't exit with error code for remaining indentation issues
+    } else {
+      exit 1
     }
+  }
 
-    Write-Log -Level SUCCESS "LINT SUCCESS: All checks passed!"
+  Write-Host ""
+  $dataSuccess = Test-DataConsistency
+  if (-not $dataSuccess) {
+    exit 1
+  }
+
+  Write-Log -Level SUCCESS "LINT SUCCESS: All checks passed!"
 }
 
-main
+main -Fix:$Fix

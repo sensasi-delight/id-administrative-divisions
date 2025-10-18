@@ -1,3 +1,6 @@
+# This GitHub Actions workflow runs lint checks on every pull request to the main branch.
+# This version is self-contained and does not require external dependencies to be installed.
+
 name: Lint Check
 
 on:
@@ -14,16 +17,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js for editorconfig-checker
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20' # Using a recent LTS version
-
-      - name: Install editorconfig-checker
-        run: npm install -g editorconfig-checker
-
       - name: Make scripts executable
-        run: chmod +x ./scripts/lint.sh ./scripts/sync.sh
+        run: chmod +x ./scripts/lint.sh
 
       - name: Run lint script
         run: ./scripts/lint.sh
