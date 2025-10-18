@@ -1,5 +1,5 @@
 # This GitHub Actions workflow runs lint checks on every pull request to the main branch.
-# This version is self-contained and does not require external dependencies to be installed.
+# It uses the fast, self-contained PowerShell script (.ps1) which runs cross-platform.
 
 name: Lint Check
 
@@ -17,8 +17,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Make scripts executable
-        run: chmod +x ./scripts/lint.sh
+      - name: Set up PowerShell
+        uses: actions/setup-powershell@v1
+        with:
+          # Use the latest stable version of PowerShell
+          version: 'latest'
 
-      - name: Run lint script
-        run: ./scripts/lint.sh
+      - name: Run PowerShell Lint Script
+        shell: pwsh
+        run: |
+          ./scripts/lint.ps1
