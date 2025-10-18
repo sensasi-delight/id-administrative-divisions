@@ -18,9 +18,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up PowerShell
-        uses: actions/setup-powershell@v1
+        uses: PowerShell/setup-powershell@v1
         with:
-          # Use the latest stable version of PowerShell
           version: 'latest'
 
       - name: Run PowerShell Lint Script
