@@ -15,12 +15,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up PowerShell
-        uses: PowerShell/setup-powershell@v1
-        with:
-          version: 'latest'
+        uses: actions/checkout@v5
 
       - name: Run PowerShell Lint Script
         shell: pwsh
